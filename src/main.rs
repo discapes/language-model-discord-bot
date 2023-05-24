@@ -101,7 +101,7 @@ impl EventHandler for Handler {
                 error!("{}", e);
                 command
                     .edit_original_interaction_response(&ctx.http, |response| {
-                        response.content(format!("maus error: {e}"))
+                        response.content(format!("maus error: `{e}`"))
                     })
                     .await
                     .ok();
