@@ -2,6 +2,7 @@ use std::env;
 use std::sync::Arc;
 
 use anyhow::anyhow;
+use anyhow::Error;
 use env_logger::Env;
 use log::{debug, error, info};
 use serenity::model::application::command::Command;
@@ -74,7 +75,7 @@ impl EventHandler for Handler {
                 _ => Err(anyhow!("not implemented :(")),
             };
 
-            match llm_response {
+            let possible_error: Option<Error> = (match llm_response {
                 Ok(llm_response) => {
                     info!(
                         "{}#{}: **{}**\n\n{}",
@@ -84,16 +85,26 @@ impl EventHandler for Handler {
                         "<@{}>: **{}**\n\n{}",
                         command.user.id, user_input, llm_response
                     );
-                    if let Err(why) = command
+                    command
                         .edit_original_interaction_response(&ctx.http, |response| {
                             response.content(msg_content)
                         })
                         .await
-                    {
-                        error!("Cannot respond to slash command: {}", why);
-                    }
+                        .map(|_| ())
+                        .map_err(Error::from)
                 }
-                Err(e) => error!("{e}"),
+                e => e.map(|_| ()),
+            })
+            .err();
+
+            if let Some(e) = possible_error {
+                error!("{}", e);
+                command
+                    .edit_original_interaction_response(&ctx.http, |response| {
+                        response.content(format!("maus error: {e}"))
+                    })
+                    .await
+                    .ok();
             }
         }
     }
