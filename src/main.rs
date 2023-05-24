@@ -1,3 +1,4 @@
+use std::cmp;
 use std::env;
 use std::sync::Arc;
 
@@ -75,36 +76,64 @@ impl EventHandler for Handler {
                 _ => Err(anyhow!("not implemented :(")),
             };
 
-            let possible_error: Option<Error> = (match llm_response {
+            let errors: Vec<Error> = match llm_response {
                 Ok(llm_response) => {
                     info!(
                         "{}#{}: **{}**\n\n{}",
                         command.user.name, command.user.discriminator, user_input, llm_response
                     );
-                    let msg_content = format!(
+                    let mut msg_content: &str = &format!(
                         "<@{}>: **{}**\n\n{}",
                         command.user.id, user_input, llm_response
                     );
-                    command
+                    let mut errors: Vec<Error> = vec![];
+                    let sub_len = 2000;
+
+                    let (chunk, rest) = msg_content.split_at(cmp::min(sub_len, msg_content.len()));
+                    msg_content = rest;
+
+                    if let Err(e) = command
+                        .create_followup_message(&ctx.http, |response| response.content(chunk))
+                        .await
+                    {
+                        errors.push(Error::from(e));
+                    }
+
+                    while !msg_content.is_empty() {
+                        let (chunk, rest) =
+                            msg_content.split_at(cmp::min(sub_len, msg_content.len()));
+                        msg_content = rest;
+
+                        if let Err(e) = command
+                            .create_followup_message(&ctx.http, |response| response.content(chunk))
+                            .await
+                        {
+                            errors.push(Error::from(e));
+                        }
+                    }
+                    errors
+                }
+                Err(e) => {
+                    let err_string = e.to_string();
+                    let mut errors: Vec<Error> = vec![e];
+
+                    if let Err(second_error) = command
                         .edit_original_interaction_response(&ctx.http, |response| {
-                            response.content(msg_content)
+                            response.content(format!(
+                                "<@{}> maus error: `{err_string}`",
+                                std::env::var("MAINTAINER_UID").unwrap_or("?".to_string())
+                            ))
                         })
                         .await
-                        .map(|_| ())
-                        .map_err(Error::from)
+                    {
+                        errors.push(second_error.into())
+                    }
+                    errors
                 }
-                e => e.map(|_| ()),
-            })
-            .err();
+            };
 
-            if let Some(e) = possible_error {
-                error!("{}", e);
-                command
-                    .edit_original_interaction_response(&ctx.http, |response| {
-                        response.content(format!("maus error: `{e}`"))
-                    })
-                    .await
-                    .ok();
+            for e in errors {
+                error!("{e}")
             }
         }
     }
