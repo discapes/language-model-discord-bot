@@ -1,6 +1,9 @@
-use std::{env};
+use std::env;
 use std::sync::Arc;
 
+use anyhow::anyhow;
+use env_logger::Env;
+use log::{debug, error, info};
 use serenity::model::application::command::Command;
 use serenity::model::application::interaction::{Interaction, InteractionResponseType};
 use serenity::model::gateway::Ready;
@@ -30,7 +33,7 @@ macro_rules! cast {
 impl EventHandler for Handler {
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
         if let Interaction::ApplicationCommand(command) = interaction {
-            println!("Received command interaction: {:#?}", command);
+            debug!("Received command interaction: {:#?}", command);
 
             let ctx = Arc::new(ctx);
             let ctx_clone = ctx.clone();
@@ -38,58 +41,70 @@ impl EventHandler for Handler {
             let command_clone = command.clone();
 
             tokio::spawn(async move {
-                command_clone.create_interaction_response(&ctx_clone.http, |response| {
-                    response.kind(InteractionResponseType::DeferredChannelMessageWithSource)
-                }).await
+                command_clone
+                    .create_interaction_response(&ctx_clone.http, |response| {
+                        response.kind(InteractionResponseType::DeferredChannelMessageWithSource)
+                    })
+                    .await
             });
 
-            let message = cast!(
-                command.data.options.get(0).unwrap().resolved.clone().unwrap(),
+            let user_input = cast!(
+                command
+                    .data
+                    .options
+                    .get(0)
+                    .unwrap()
+                    .resolved
+                    .clone()
+                    .unwrap(),
                 CommandDataOptionValue::String
             );
 
-            let content = match command.data.name.as_str() {
-                "chat" => match api::send_request(
-                    &env::var("API_URL").expect("Expected API_URL in the environment"),
-                    &Request {
-                        user_input: &message,
-                        ..Default::default()
-                    },
-                )
-                .await
-                {
-                    Ok(text) => Ok(text),
-                    Err(e) => {
-                        eprintln!("Error! {e:?}");
-                        Err(e)
+            let llm_response = match command.data.name.as_str() {
+                "chat" => {
+                    api::send_request(
+                        &env::var("API_URL").expect("Expected API_URL in the environment"),
+                        &Request {
+                            user_input: &user_input,
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                }
+                _ => Err(anyhow!("not implemented :(")),
+            };
+
+            match llm_response {
+                Ok(llm_response) => {
+                    info!(
+                        "{}#{}: **{}**\n\n{}",
+                        command.user.name, command.user.discriminator, user_input, llm_response
+                    );
+                    let msg_content = format!(
+                        "<@{}>: **{}**\n\n{}",
+                        command.user.id, user_input, llm_response
+                    );
+                    if let Err(why) = command
+                        .edit_original_interaction_response(&ctx.http, |response| {
+                            response.content(msg_content)
+                        })
+                        .await
+                    {
+                        error!("Cannot respond to slash command: {}", why);
                     }
-                },
-
-                _ => Ok("not implemented :(".to_string()),
-            };
-
-            if content.is_err() {
-                return;
-            };
-            let mut content = content.unwrap();
-            content.insert_str(0, &format!("<@{}>: **{}**\n\n", command.user.id, message));
-
-            if let Err(why) = command
-                .edit_original_interaction_response(&ctx.http, |response| response.content(content))
-                .await
-            {
-                println!("Cannot respond to slash command: {}", why);
+                }
+                Err(e) => error!("{e}"),
             }
         }
     }
 
     async fn ready(&self, ctx: Context, ready: Ready) {
-        println!("{} is connected!", ready.user.name);
+        info!("{} is connected!", ready.user.name);
 
         let global_command =
             Command::create_global_application_command(&ctx.http, register_command).await;
 
-        println!(
+        debug!(
             "I created the following global slash command: {:#?}",
             global_command
         );
@@ -113,6 +128,7 @@ pub fn register_command(
 
 #[tokio::main]
 async fn main() {
+    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
     dotenv::dotenv().ok();
     let token = env::var("DISCORD_TOKEN").expect("Expected DISCORD_TOKEN in the environment");
 
@@ -125,6 +141,6 @@ async fn main() {
     // Shards will automatically attempt to reconnect, and will perform
     // exponential backoff until it reconnects.
     if let Err(why) = client.start().await {
-        println!("Client error: {:?}", why);
+        error!("Client error: {:?}", why);
     }
 }

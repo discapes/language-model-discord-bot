@@ -1,3 +1,4 @@
+use log::debug;
 use serde::{Serialize, Deserialize};
 use anyhow::Result;
 
@@ -108,7 +109,7 @@ impl Default for Request<'_> {
 }
 
 pub async fn send_request(url: &str, request: &Request<'_>) -> Result<String> {
-    println!("Sending to url {url} request {request:?}");
+    debug!("Sending to url {url} request {request:?}");
 
     let client = reqwest::Client::new();
     let res = client.post(url)
@@ -117,10 +118,10 @@ pub async fn send_request(url: &str, request: &Request<'_>) -> Result<String> {
         .await?
         .json::<Response>()
         .await?;
-    println!("Received response {res:?}");
+    debug!("Received response {res:?}");
 
     let text = res.results[0].history.visible.last().unwrap().last().unwrap();
-    println!("Received text {text}");
+    debug!("Received text {text}");
 
     Ok(text.to_string())
 }
